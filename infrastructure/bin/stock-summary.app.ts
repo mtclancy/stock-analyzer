@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { AdventureBackendStack } from '../lib/adventure-backend-stack';
+import { StockSummaryStack } from '../lib/stock-summary.stack';
 
 const app = new cdk.App();
-new AdventureBackendStack(app, 'AdventureBackendStack', {
+new StockSummaryStack(app, 'AdventureBackendStack', {
   /* If you don't specify 'env', this stack will be environment-agnostic.
    * Account/Region-dependent features and context lookups will not work,
    * but a single synthesized template can be deployed anywhere. */
