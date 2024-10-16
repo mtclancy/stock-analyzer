@@ -5,45 +5,86 @@ import { Run } from "openai/resources/beta/threads/runs/runs";
 import { v4 as uuidv4 } from 'uuid';
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { dynamodbClient } from "../dynamodb/dynamodb-client";
-import { GetParametersCommand, GetParametersCommandInput, Parameter } from "@aws-sdk/client-ssm";
+import { GetParameterCommand, GetParameterCommandInput} from "@aws-sdk/client-ssm";
 import { ssmClient } from "../ssm/ssm-client";
 import { getOpenAiClient } from "./open-ai/open-ai.client";
+import { GetItemCommand } from "@aws-sdk/client-dynamodb";
 
 let openAiClient: OpenAI;
 
-export async function handler(event: {ticker: string, groupId: string}) {
-    const { alphaKey, openAiKey} = await getKeys();
+interface AnalysisEvent {
+  email: string
+  ticker: string;
+  groupId: string;
+}
+
+interface CurrentPrice {
+  "1. open": number,
+  "2. high": number,
+  "3. low": number,
+  "4. close": number,
+  "5. volume": number
+}
+
+export async function handler(event: AnalysisEvent) {
+    const { alphaKey, openAiKey} = await getKeys(event.email);
     openAiClient = getOpenAiClient(openAiKey);
     const generalInformation: GeneralStockData = await getCompanyInformation(event.ticker, alphaKey);
     const newsAndSentiment: NewsFeed = await getNewsAndSentiment(event.ticker, alphaKey);
-    const newsSummary = await summarizeSentiment(newsAndSentiment, openAiKey)
+    const currentPrice: CurrentPrice = await getCurrentPrice(event.ticker, alphaKey);
+    const newsSummary = await summarizeSentiment(newsAndSentiment)
 
-    const stockAnalysis = await analyzeStockWithAssistant(generalInformation, newsSummary ?? '');
+    const stockAnalysis = await analyzeStockWithAssistant(generalInformation, newsSummary ?? '', currentPrice);
     if(stockAnalysis){
-      await writeAnalysisToDb(stockAnalysis, event.groupId)
+      await writeAnalysisToDb(stockAnalysis, event)
     }
+    return 'done'
     
 }
 
-async function getKeys(): Promise<{ alphaKey: string, openAiKey: string}> {
-  const parameterInput: GetParametersCommandInput = {
-    Names: [
-      "open-ai-key",
-      "alpha-key"
-    ],
+async function getKeys(email: string): Promise<{ alphaKey: string, openAiKey: string}> {
+  const alphaKeyResult = await getAlphaKey(email);
+
+  const parameterInput: GetParameterCommandInput = {
+    Name:"open-ai-key",
     WithDecryption: true,
   };
-  const parameterCommand = new GetParametersCommand(parameterInput);
-  const keys = await ssmClient.send(parameterCommand);
-  const alphaKey = keys.Parameters?.find(k => k.Name === 'alpha-key');
-  const openAiKey = keys.Parameters?.find(k => k.Name === 'open-ai-key')
-  if((!alphaKey || !alphaKey.Value) || (!openAiKey || !openAiKey.Value)) {
+
+  const parameterCommand = new GetParameterCommand(parameterInput);
+  const openAiKeyResult = await ssmClient.send(parameterCommand);
+  const alphaKey = alphaKeyResult.Item?.alphaKey.S;
+  const openAiKey = openAiKeyResult.Parameter
+  
+  if((!alphaKey) || (!openAiKey || !openAiKey.Value)) {
     throw new Error("API keys missing")
   }
+  
   return {
-    alphaKey: alphaKey.Value,
+    alphaKey: alphaKey,
     openAiKey: openAiKey.Value
   }
+}
+async function getAlphaKey(email: string) {
+  const getAlphaKey: GetItemCommand = new GetItemCommand({
+    Key: { id: { S: email } },
+    TableName: 'user-table'
+  });
+
+  const alphaKeyResult = await dynamodbClient.send(getAlphaKey);
+  return alphaKeyResult;
+}
+
+async function getCurrentPrice(ticker: string, alphaKey: string) {
+  let config: AxiosRequestConfig = {
+      method: 'get',
+      maxBodyLength: Infinity,
+      url: `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&apikey=${alphaKey}`,
+      headers: { }
+    };
+    
+  const result = await axios.request(config)
+  const firstKey = Object.keys(result.data['Time Series (Daily)'])[0];
+  return result.data['Time Series (Daily)'][firstKey];
 }
 
 async function getCompanyInformation(ticker: string, alphaKey: string) {
@@ -72,7 +113,7 @@ async function getNewsAndSentiment(ticker: string, alphaKey: string) {
     return result.data;
 }
 
-async function summarizeSentiment(newsFeed: NewsFeed, openAiKey: string) {
+async function summarizeSentiment(newsFeed: NewsFeed) {
     const params: OpenAI.Chat.ChatCompletionCreateParams = {
         messages: [{ role: 'user', content: `summarize the following market news and sentiment about the following company from the Alpha Vantage API: ${JSON.stringify(newsFeed)}` }],
         model: 'gpt-4o-mini',
@@ -96,25 +137,32 @@ async function analyzeStock(generalInformation: GeneralStockData, newsSummary: s
       return chatCompletion.choices[0].message.content;
 }
 
-async function analyzeStockWithAssistant(generalInformation: GeneralStockData, newsSummary: string) {
-    const thread = await openAiClient.beta.threads.create();
+async function analyzeStockWithAssistant(generalInformation: GeneralStockData, newsSummary: string, currentPrice: CurrentPrice, ) {
+    const content = `Ticker: ${generalInformation.Symbol}, General Information: ${JSON.stringify(generalInformation)}, Current Price: ${JSON.stringify(currentPrice)},News and Sentiment: ${newsSummary}`;
+    const thread = await openAiClient.beta.threads.create({
+      messages: [
+        {
+          role: "user",
+          content
+        }
+      ]
+    });
+    
     let run = await openAiClient.beta.threads.runs.createAndPoll(
         thread.id,
         { 
-          assistant_id: 'asst_g4VrccnfrR4sgLZo1zkdtwzj',
-          instructions: `I have provided general stock information about a company and a summary of news and sentiment surrounding the company.  Do you feel it is a strong stock to buy based on this information?  General Information: ${JSON.stringify(generalInformation)}, News and Sentiment: ${newsSummary}`
+          assistant_id: 'asst_g4VrccnfrR4sgLZo1zkdtwzj'
         }
       );
     return await getMessageFromAssistant(run);
 }
 
 async function getMessageFromAssistant(run: Run) {
-    console.log('checking')
     if (run.status === 'completed') {
         const messages = await openAiClient.beta.threads.messages.list(
           run.thread_id
         );
-        for (const message of messages.data.reverse()) {
+        for (const message of messages.data) {
           if(message.content[0].type === 'text') {
             return message.content[0].text.value
           }
@@ -130,14 +178,15 @@ function wait(ms: number) {
 }
 
 
-async function writeAnalysisToDb(stockAnalysis: string, groupId: string) {
+async function writeAnalysisToDb(stockAnalysis: string, event: AnalysisEvent) {
 
   const putCommand = new PutCommand({
     TableName: process.env['ANALYSIS_TABLE_NAME'],
     Item: {
       id: uuidv4(),
       analysis: stockAnalysis,
-      groupId: groupId
+      groupId: event.groupId,
+      ticker: event.ticker
     }
   })
 
