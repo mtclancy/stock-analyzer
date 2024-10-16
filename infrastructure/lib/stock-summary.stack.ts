@@ -7,9 +7,10 @@ import * as apiGateway from 'aws-cdk-lib/aws-apigateway';
 import { DefinitionBody, IChainable, Map, StateMachine } from 'aws-cdk-lib/aws-stepfunctions';
 import { LambdaInvoke } from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
+import { SharedResources } from '../types/stack-types';
 
 export class StockSummaryStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props: cdk.StackProps, sharedResources: SharedResources) {
     super(scope, id, props);
 
     const tableOptions: dynamo.TableProps = {
@@ -58,17 +59,41 @@ export class StockSummaryStack extends cdk.Stack {
       }
     }
     
+    const emailLambdaProps: lambda.NodejsFunctionProps = {
+      functionName: 'emailHandler',
+      entry: '../src/email-handler/index.ts',
+      runtime: Runtime.NODEJS_20_X,
+      handler: 'handler',
+      architecture: Architecture.ARM_64,
+      timeout: cdk.Duration.minutes(1),
+      memorySize: 512,
+      environment: {
+        ANALYSIS_TABLE_NAME: stockSummaryTable.tableName,
+        EMAIL_FROM: 'mtclancy86@gmail.com'
+      }
+    }
+    const emailLambda = new lambda.NodejsFunction(this, 'email-lambda', emailLambdaProps);
     const stockAnalysisLambda = new lambda.NodejsFunction(this, 'stock-analysis-lambda', stockAnalysisLambdaProps);
     
     const analysisMapStep = new Map(this, 'analysis-map', {
-      maxConcurrency: 2,
-      itemsPath: '$'
+      maxConcurrency: 1,
+      itemsPath: '$.itemsPath',
+      resultPath: '$.mapResult'
     })
     const chainableStep: IChainable = new LambdaInvoke(this, 'analysis-map-invoke', { lambdaFunction: stockAnalysisLambda })
-    analysisMapStep.itemProcessor(chainableStep)
+    
+    analysisMapStep.itemProcessor(chainableStep);
+
+    const emailStep: IChainable = new LambdaInvoke(this, 'email-invoke', {
+      lambdaFunction: emailLambda,
+      inputPath: '$'
+    })
     
     const analysisStepFunction = new StateMachine(this, 'analysis-state-machine', {
-      definitionBody: DefinitionBody.fromChainable(analysisMapStep)
+      definitionBody: DefinitionBody.fromChainable(
+        analysisMapStep
+        .next(emailStep)
+      )
     })
     
     const relatedCompaniesLambdaProps: lambda.NodejsFunctionProps = {
@@ -99,9 +124,15 @@ export class StockSummaryStack extends cdk.Stack {
     
     analysisRoot.addMethod("POST", lambdaIntegration)
     analysisStepFunction.grantStartExecution(relatedCompaniesLambda);
+    stockSummaryTable.grantReadData(emailLambda);
     stockSummaryTable.grantReadWriteData(stockAnalysisLambda);
+    sharedResources.userTable.grantReadData(stockAnalysisLambda);
     relatedCompaniesLambda.addToRolePolicy(polygonIAM);
     stockAnalysisLambda.addToRolePolicy(analysisKeysIAM);
+    emailLambda.addToRolePolicy(new PolicyStatement({
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      resources: ['*'],  // You can limit this to specific SES identities if needed
+    }));
 
   }
 }
