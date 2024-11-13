@@ -38,9 +38,8 @@ export class StockSummaryStack extends cdk.Stack {
     })
 
     const analysisKeysIAM = new PolicyStatement({
-      actions: ['ssm:GetParameters'],
+      actions: ['ssm:GetParameter'],
       resources: [
-        'arn:aws:ssm:us-east-1:533267426111:parameter/alpha-key',
         'arn:aws:ssm:us-east-1:533267426111:parameter/open-ai-key'
       ]
     })
@@ -69,7 +68,7 @@ export class StockSummaryStack extends cdk.Stack {
       memorySize: 512,
       environment: {
         ANALYSIS_TABLE_NAME: stockSummaryTable.tableName,
-        EMAIL_FROM: 'mtclancy86@gmail.com'
+        EMAIL_FROM: 'ai_analyzer@stock-summary.mikec-dev.com'
       }
     }
     const emailLambda = new lambda.NodejsFunction(this, 'email-lambda', emailLambdaProps);

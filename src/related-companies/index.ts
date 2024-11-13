@@ -33,7 +33,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     
     if(eventBody.ticker && polygonKey.Parameter?.Value && eventBody.compare) {
         const getCompaniesResult = await getRelatedCompanies(eventBody.ticker, polygonKey.Parameter?.Value);
-        relatedCompanies = getCompaniesResult.results.map(r => ({ticker: r.ticker, groupId: uuid, email: eventBody.emailTo }));
+        relatedCompanies = getCompaniesResult.results.map(r => ({ticker: r.ticker, groupId: uuid, email: eventBody.emailTo })).slice(0,2);
     }
 
     const stateMachinePayload = [originalCompany, ...relatedCompanies];

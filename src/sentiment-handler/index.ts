@@ -9,6 +9,7 @@ import { GetParameterCommand, GetParameterCommandInput} from "@aws-sdk/client-ss
 import { ssmClient } from "../ssm/ssm-client";
 import { getOpenAiClient } from "./open-ai/open-ai.client";
 import { GetItemCommand } from "@aws-sdk/client-dynamodb";
+import { CurrentPrice, GeneralStockData, NewsFeed } from "../alpha-advantage/alpha.types";
 
 let openAiClient: OpenAI;
 
@@ -16,14 +17,6 @@ interface AnalysisEvent {
   email: string
   ticker: string;
   groupId: string;
-}
-
-interface CurrentPrice {
-  "1. open": number,
-  "2. high": number,
-  "3. low": number,
-  "4. close": number,
-  "5. volume": number
 }
 
 export async function handler(event: AnalysisEvent) {
