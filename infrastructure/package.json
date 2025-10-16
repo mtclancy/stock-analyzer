@@ -1,8 +1,8 @@
 {
-  "name": "adventure-backend",
+  "name": "stock-analyzer",
   "version": "0.1.0",
   "bin": {
-    "adventure-backend": "bin/adventure-backend.js"
+    "stock-analyzer": "bin/stock-analyzer.js"
   },
   "scripts": {
     "build": "tsc",
